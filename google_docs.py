@@ -257,7 +257,7 @@ def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
                                 'startIndex': current_index,
                                 'endIndex': current_index + len(text) - 1  # Exclude the newline
                             },
-                            'bulletPreset': 'NUMBERED_DECIMAL'
+                            'bulletPreset': 'NUMBERED_DECIMAL_ALPHA_ROMAN'
                         }
                     })
                     
