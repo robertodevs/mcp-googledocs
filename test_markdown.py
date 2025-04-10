@@ -130,18 +130,7 @@ async def test_markdown_conversion():
         elif 'createParagraphBullets' in request:
             elements_check['lists'] = True
     
-    # Check for italic "*Good luck!*" text specifically
-    italic_good_luck_found = False
-    for i, request in enumerate(requests):
-        if ('insertText' in request and 
-            'Good luck!' in request['insertText'].get('text', '') and
-            i+1 < len(requests) and
-            'updateTextStyle' in requests[i+1] and
-            requests[i+1]['updateTextStyle'].get('textStyle', {}).get('italic')):
-            italic_good_luck_found = True
-            elements_check['italic'] = True
-            print("Found italic formatting for 'Good luck!' text")
-            break
+    
     
     # Check for horizontal rule (---) - simplistic check
     for request in requests:
@@ -155,16 +144,6 @@ async def test_markdown_conversion():
     # Option to create the document
     create_doc = False  # Set to True to actually create a document
     
-    # Debug: Find all insertText requests that contain 'Good luck!'
-    print("\n=== Debugging Good luck! text ===")
-    for i, request in enumerate(requests):
-        if 'insertText' in request and 'Good luck!' in request['insertText'].get('text', ''):
-            print(f"Found at index {i}: {request}")
-            # Show the next request to see if it applies italic styling
-            if i+1 < len(requests):
-                print(f"Next request: {requests[i+1]}")
-            else:
-                print("No next request")
     
     if create_doc:
         try:

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Tuple
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -166,335 +166,271 @@ async def update_document_content(document_id: str, content: str) -> Dict[str, A
             "error": str(e)
         }
 
-def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
-    """Convert markdown text to Google Docs API batchUpdate requests.
-    
-    This function parses common markdown elements and creates the appropriate
-    Google Docs API requests to replicate that formatting in a Google Doc.
-    
-    Args:
-        markdown_text: The markdown text to convert
-    
-    Returns:
-        A list of request objects for the batchUpdate method
-    """
+def process_code_block(block: str, current_index: int) -> Tuple[List[Dict[str, Any]], int]:
+    """Process a code block and return the requests and updated index."""
     import re
-    
     requests = []
-    current_index = 1  # Start at index 1 (after the initial position)
-    
-    # Process the markdown in blocks to handle complex elements like lists and code blocks
-    blocks = re.split(r'\n{2,}', markdown_text)
-    
-    # Special handling for the last line with *Good luck!*
-    last_line = markdown_text.strip().split('\n')[-1]
-    if last_line.strip() == '*Good luck!*':
-        has_good_luck = True
-    else:
-        has_good_luck = False
-    
-    for block in blocks:
-        lines = block.split('\n')
-        
-        # Check if it's a code block (indented by 4 spaces or ```language code ```)
-        code_block_match = re.match(r'^```(\w*)\n(.*?)\n```$', block, re.DOTALL)
-        if code_block_match:
-            # Extract code and language
-            language = code_block_match.group(1)
-            code = code_block_match.group(2)
-            
-            # Insert code text
+    code_block_match = re.match(r'^```(\w*)\n(.*?)\n```$', block, re.DOTALL)
+    if code_block_match:
+        code = code_block_match.group(2)
+        requests.append({
+            'insertText': {
+                'location': {'index': current_index},
+                'text': code + "\n\n"
+            }
+        })
+        requests.append({
+            'updateTextStyle': {
+                'range': {
+                    'startIndex': current_index,
+                    'endIndex': current_index + len(code)
+                },
+                'textStyle': {
+                    'fontFamily': 'Consolas',
+                    'backgroundColor': {'color': {'rgbColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95}}}
+                },
+                'fields': 'fontFamily,backgroundColor'
+            }
+        })
+        current_index += len(code) + 2
+    return requests, current_index
+
+
+def process_list_block(lines: List[str], current_index: int) -> Tuple[List[Dict[str, Any]], int]:
+    """Process a list block and return the requests and updated index."""
+    import re
+    requests = []
+    for line in lines:
+        ordered_match = re.match(r'^\s*(\d+)\.\s+(.+)$', line)
+        unordered_match = re.match(r'^\s*[\*\-\+]\s+(.+)$', line)
+        if ordered_match:
+            text = ordered_match.group(2) + "\n"
             requests.append({
                 'insertText': {
                     'location': {'index': current_index},
-                    'text': code + "\n\n"
+                    'text': text
                 }
             })
-            
-            # Apply code style (monospace font)
+            requests.append({
+                'createParagraphBullets': {
+                    'range': {
+                        'startIndex': current_index,
+                        'endIndex': current_index + len(text) - 1
+                    },
+                    'bulletPreset': 'NUMBERED_DECIMAL_ALPHA_ROMAN'
+                }
+            })
+            current_index += len(text)
+        elif unordered_match:
+            text = unordered_match.group(1) + "\n"
+            requests.append({
+                'insertText': {
+                    'location': {'index': current_index},
+                    'text': text
+                }
+            })
+            requests.append({
+                'createParagraphBullets': {
+                    'range': {
+                        'startIndex': current_index,
+                        'endIndex': current_index + len(text) - 1
+                    },
+                    'bulletPreset': 'BULLET_DISC_CIRCLE_SQUARE'
+                }
+            })
+            current_index += len(text)
+        else:
+            requests.append({
+                'insertText': {
+                    'location': {'index': current_index},
+                    'text': line + "\n"
+                }
+            })
+            current_index += len(line) + 1
+    requests.append({
+        'insertText': {
+            'location': {'index': current_index},
+            'text': "\n"
+        }
+    })
+    current_index += 1
+    return requests, current_index
+
+
+def process_header(line: str, current_index: int) -> Tuple[List[Dict[str, Any]], int]:
+    """Process a header line and return the requests and updated index."""
+    import re
+    requests = []
+    header_match = re.match(r'^(#{1,6})\s+(.+)$', line)
+    if header_match:
+        level = len(header_match.group(1))
+        text = header_match.group(2) + "\n"
+        requests.append({
+            'insertText': {
+                'location': {'index': current_index},
+                'text': text
+            }
+        })
+        requests.append({
+            'updateParagraphStyle': {
+                'range': {
+                    'startIndex': current_index,
+                    'endIndex': current_index + len(text)
+                },
+                'paragraphStyle': {
+                    'namedStyleType': f'HEADING_{level}'
+                },
+                'fields': 'namedStyleType'
+            }
+        })
+        current_index += len(text)
+    return requests, current_index
+
+
+def process_inline_formatting(line: str, current_index: int) -> Tuple[List[Dict[str, Any]], int]:
+    """Process inline formatting and return the requests and updated index."""
+    import re
+    requests = []
+    line_parts = []
+    current_pos = 0
+    formatting_matches = []
+    for match in re.finditer(r'\*\*(.+?)\*\*|__(.+?)__', line):
+        text = match.group(1) if match.group(1) else match.group(2)
+        formatting_matches.append({
+            'start': match.start(),
+            'end': match.end(),
+            'text': text,
+            'type': 'bold'
+        })
+    for match in re.finditer(r'\*([^*]+)\*|_([^_]+)_', line):
+        text = match.group(1) if match.group(1) else match.group(2)
+        formatting_matches.append({
+            'start': match.start(),
+            'end': match.end(),
+            'text': text,
+            'type': 'italic'
+        })
+    for match in re.finditer(r'\[(.+?)\]\((.+?)\)', line):
+        text = match.group(1)
+        url = match.group(2)
+        formatting_matches.append({
+            'start': match.start(),
+            'end': match.end(),
+            'text': text,
+            'url': url,
+            'type': 'link'
+        })
+    formatting_matches.sort(key=lambda m: m['start'])
+    i = 0
+    while i < len(formatting_matches) - 1:
+        if formatting_matches[i]['end'] > formatting_matches[i+1]['start']:
+            formatting_matches.pop(i+1)
+        else:
+            i += 1
+    for i, match in enumerate(formatting_matches):
+        if match['start'] > current_pos:
+            line_parts.append({
+                'text': line[current_pos:match['start']],
+                'type': 'normal'
+            })
+        line_parts.append({
+            'text': match['text'],
+            'type': match['type'],
+            'url': match.get('url')
+        })
+        current_pos = match['end']
+    if current_pos < len(line):
+        line_parts.append({
+            'text': line[current_pos:],
+            'type': 'normal'
+        })
+    if not line_parts:
+        line_parts.append({
+            'text': line,
+            'type': 'normal'
+        })
+    line_parts.append({
+        'text': '\n',
+        'type': 'normal'
+    })
+    for part in line_parts:
+        text = part['text']
+        requests.append({
+            'insertText': {
+                'location': {'index': current_index},
+                'text': text
+            }
+        })
+        if part['type'] == 'bold':
             requests.append({
                 'updateTextStyle': {
                     'range': {
                         'startIndex': current_index,
-                        'endIndex': current_index + len(code)
+                        'endIndex': current_index + len(text)
                     },
                     'textStyle': {
-                        'fontFamily': 'Consolas',
-                        'backgroundColor': {'color': {'rgbColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95}}}
+                        'bold': True
                     },
-                    'fields': 'fontFamily,backgroundColor'
+                    'fields': 'bold'
                 }
             })
-            
-            current_index += len(code) + 2  # +2 for the newlines
+        elif part['type'] == 'italic':
+            requests.append({
+                'updateTextStyle': {
+                    'range': {
+                        'startIndex': current_index,
+                        'endIndex': current_index + len(text)
+                    },
+                    'textStyle': {
+                        'italic': True
+                    },
+                    'fields': 'italic'
+                }
+            })
+        elif part['type'] == 'link':
+            requests.append({
+                'updateTextStyle': {
+                    'range': {
+                        'startIndex': current_index,
+                        'endIndex': current_index + len(text)
+                    },
+                    'textStyle': {
+                        'link': {
+                            'url': part['url']
+                        }
+                    },
+                    'fields': 'link'
+                }
+            })
+        current_index += len(text)
+    return requests, current_index
+
+
+
+
+def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
+    """Convert markdown text to Google Docs API batchUpdate requests."""
+    import re
+    requests = []
+    current_index = 1
+    blocks = re.split(r'\n{2,}', markdown_text)
+    for block in blocks:
+        lines = block.split('\n')
+        code_block_match = re.match(r'^```(\w*)\n(.*?)\n```$', block, re.DOTALL)
+        if code_block_match:
+            block_requests, current_index = process_code_block(block, current_index)
+            requests.extend(block_requests)
             continue
-        
-        # Check if it's a list block
         is_list = all(re.match(r'^\s*[\*\-\+]|\d+\.', line) for line in lines if line.strip())
         if is_list and lines:
-            for line in lines:
-                # Check for ordered list
-                ordered_match = re.match(r'^\s*(\d+)\.\s+(.+)$', line)
-                # Check for unordered list
-                unordered_match = re.match(r'^\s*[\*\-\+]\s+(.+)$', line)
-                
-                if ordered_match:
-                    number = ordered_match.group(1)
-                    text = ordered_match.group(2) + "\n"
-                    
-                    # Insert list item text
-                    requests.append({
-                        'insertText': {
-                            'location': {'index': current_index},
-                            'text': text
-                        }
-                    })
-                    
-                    # Apply numbered list style
-                    requests.append({
-                        'createParagraphBullets': {
-                            'range': {
-                                'startIndex': current_index,
-                                'endIndex': current_index + len(text) - 1  # Exclude the newline
-                            },
-                            'bulletPreset': 'NUMBERED_DECIMAL_ALPHA_ROMAN'
-                        }
-                    })
-                    
-                    current_index += len(text)
-                
-                elif unordered_match:
-                    text = unordered_match.group(1) + "\n"
-                    
-                    # Insert list item text
-                    requests.append({
-                        'insertText': {
-                            'location': {'index': current_index},
-                            'text': text
-                        }
-                    })
-                    
-                    # Apply bullet list style
-                    requests.append({
-                        'createParagraphBullets': {
-                            'range': {
-                                'startIndex': current_index,
-                                'endIndex': current_index + len(text) - 1  # Exclude the newline
-                            },
-                            'bulletPreset': 'BULLET_DISC_CIRCLE_SQUARE'
-                        }
-                    })
-                    
-                    current_index += len(text)
-                
-                else:
-                    # Just a blank line or non-list line
-                    requests.append({
-                        'insertText': {
-                            'location': {'index': current_index},
-                            'text': line + "\n"
-                        }
-                    })
-                    current_index += len(line) + 1
-            
-            # Add extra newline after list block
-            requests.append({
-                'insertText': {
-                    'location': {'index': current_index},
-                    'text': "\n"
-                }
-            })
-            current_index += 1
+            list_requests, current_index = process_list_block(lines, current_index)
+            requests.extend(list_requests)
             continue
-        
-        # Regular block of text (paragraphs, headers, etc.)
-        for line in lines:
-            if not line.strip():  # Empty line
-                requests.append({
-                    'insertText': {
-                        'location': {'index': current_index},
-                        'text': "\n"
-                    }
-                })
-                current_index += 1
-                continue
-            
-            # Check for headers
-            header_match = re.match(r'^(#{1,6})\s+(.+)$', line)
-            if header_match:
-                level = len(header_match.group(1))
-                text = header_match.group(2) + "\n"
-                
-                # Insert the header text
-                requests.append({
-                    'insertText': {
-                        'location': {'index': current_index},
-                        'text': text
-                    }
-                })
-                
-                # Apply heading style
-                requests.append({
-                    'updateParagraphStyle': {
-                        'range': {
-                            'startIndex': current_index,
-                            'endIndex': current_index + len(text)
-                        },
-                        'paragraphStyle': {
-                            'namedStyleType': f'HEADING_{level}'
-                        },
-                        'fields': 'namedStyleType'
-                    }
-                })
-                
-                current_index += len(text)
-                continue
-            
-            # Process inline formatting for bold, italic, links, etc.
-            line_parts = []
-            current_pos = 0
-            
-            # Find all formatting elements in the line
-            formatting_matches = []
-            # Bold: **text** or __text__
-            for match in re.finditer(r'\*\*(.+?)\*\*|__(.+?)__', line):
-                text = match.group(1) if match.group(1) else match.group(2)
-                formatting_matches.append({
-                    'start': match.start(),
-                    'end': match.end(),
-                    'text': text,
-                    'type': 'bold'
-                })
-            
-            # Italic: *text* or _text_
-            for match in re.finditer(r'\*([^*]+)\*|_([^_]+)_', line):
-                text = match.group(1) if match.group(1) else match.group(2)
-                formatting_matches.append({
-                    'start': match.start(),
-                    'end': match.end(),
-                    'text': text,
-                    'type': 'italic'
-                })
-            
-            # Links: [text](url)
-            for match in re.finditer(r'\[(.+?)\]\((.+?)\)', line):
-                text = match.group(1)
-                url = match.group(2)
-                formatting_matches.append({
-                    'start': match.start(),
-                    'end': match.end(),
-                    'text': text,
-                    'url': url,
-                    'type': 'link'
-                })
-            
-            # Sort formatting matches by start position
-            formatting_matches.sort(key=lambda m: m['start'])
-            
-            # Simple check to remove overlapping matches (taking the first one)
-            i = 0
-            while i < len(formatting_matches) - 1:
-                if formatting_matches[i]['end'] > formatting_matches[i+1]['start']:
-                    formatting_matches.pop(i+1)
-                else:
-                    i += 1
-            
-            # Process the line with formatting
-            for i, match in enumerate(formatting_matches):
-                # Add text before the formatting
-                if match['start'] > current_pos:
-                    line_parts.append({
-                        'text': line[current_pos:match['start']],
-                        'type': 'normal'
-                    })
-                
-                # Add the formatted text
-                line_parts.append({
-                    'text': match['text'],
-                    'type': match['type'],
-                    'url': match.get('url')
-                })
-                
-                current_pos = match['end']
-            
-            # Add remaining text
-            if current_pos < len(line):
-                line_parts.append({
-                    'text': line[current_pos:],
-                    'type': 'normal'
-                })
-            
-            # If no formatting found, add the whole line
-            if not line_parts:
-                line_parts.append({
-                    'text': line,
-                    'type': 'normal'
-                })
-            
-            # Add a newline at the end
-            line_parts.append({
-                'text': '\n',
-                'type': 'normal'
-            })
-            
-            # Insert all parts with appropriate styling
-            for part in line_parts:
-                text = part['text']
-                requests.append({
-                    'insertText': {
-                        'location': {'index': current_index},
-                        'text': text
-                    }
-                })
-                
-                # Apply styling based on part type
-                if part['type'] == 'bold':
-                    requests.append({
-                        'updateTextStyle': {
-                            'range': {
-                                'startIndex': current_index,
-                                'endIndex': current_index + len(text)
-                            },
-                            'textStyle': {
-                                'bold': True
-                            },
-                            'fields': 'bold'
-                        }
-                    })
-                
-                elif part['type'] == 'italic':
-                    requests.append({
-                        'updateTextStyle': {
-                            'range': {
-                                'startIndex': current_index,
-                                'endIndex': current_index + len(text)
-                            },
-                            'textStyle': {
-                                'italic': True
-                            },
-                            'fields': 'italic'
-                        }
-                    })
-                
-                elif part['type'] == 'link':
-                    requests.append({
-                        'updateTextStyle': {
-                            'range': {
-                                'startIndex': current_index,
-                                'endIndex': current_index + len(text)
-                            },
-                            'textStyle': {
-                                'link': {
-                                    'url': part['url']
-                                }
-                            },
-                            'fields': 'link'
-                        }
-                    })
-                
-                current_index += len(text)
-        
-        # Add an extra newline between blocks
+        header_requests, current_index = process_header(lines[0], current_index)
+        requests.extend(header_requests)
+        for line in lines[1:]:
+            inline_requests, current_index = process_inline_formatting(line, current_index)
+            requests.extend(inline_requests)
         requests.append({
             'insertText': {
                 'location': {'index': current_index},
@@ -502,40 +438,6 @@ def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
             }
         })
         current_index += 1
-    
-    # Special handling for "Good luck!" text with italic
-    if has_good_luck:
-        good_luck_text = "Good luck!"
-        requests.append({
-            'insertText': {
-                'location': {'index': current_index},
-                'text': good_luck_text
-            }
-        })
-        
-        # Apply italic style
-        requests.append({
-            'updateTextStyle': {
-                'range': {
-                    'startIndex': current_index,
-                    'endIndex': current_index + len(good_luck_text)
-                },
-                'textStyle': {
-                    'italic': True
-                },
-                'fields': 'italic'
-            }
-        })
-        
-        # Add final newline
-        current_index += len(good_luck_text)
-        requests.append({
-            'insertText': {
-                'location': {'index': current_index},
-                'text': "\n"
-            }
-        })
-    
     return requests
 
 if __name__ == "__main__":
