@@ -172,7 +172,7 @@ async def test_markdown_conversion():
             if style.get('bold'):
                 elements_check['bold'] = True
                 # Store a bold example with its associated text
-                text_index = find_text_for_style(requests, i)
+                text_index = find_text_for_request_range(requests, request['updateTextStyle']['range'])
                 if text_index >= 0 and len(formatting_examples['bold']) < 3:
                     formatting_examples['bold'].append({
                         'style_request': request,
@@ -183,7 +183,7 @@ async def test_markdown_conversion():
             if style.get('italic'):
                 elements_check['italic'] = True
                 # Store an italic example with its associated text
-                text_index = find_text_for_style(requests, i)
+                text_index = find_text_for_request_range(requests, request['updateTextStyle']['range'])
                 if text_index >= 0 and len(formatting_examples['italic']) < 3:
                     formatting_examples['italic'].append({
                         'style_request': request,
@@ -194,7 +194,7 @@ async def test_markdown_conversion():
             if style.get('fontFamily') == 'Consolas':
                 elements_check['code_blocks'] = True
                 # Store a code block example
-                text_index = find_text_for_style(requests, i)
+                text_index = find_text_for_request_range(requests, request['updateTextStyle']['range'])
                 if text_index >= 0 and len(formatting_examples['code_blocks']) < 1:
                     formatting_examples['code_blocks'].append({
                         'style_request': request,
@@ -204,7 +204,7 @@ async def test_markdown_conversion():
         elif 'createParagraphBullets' in request:
             elements_check['lists'] = True
             # Store a list example
-            text_index = find_text_for_style(requests, i)
+            text_index = find_text_for_request_range(requests, request['createParagraphBullets']['range'])
             if text_index >= 0 and len(formatting_examples['lists']) < 2:
                 formatting_examples['lists'].append({
                     'style_request': request,
@@ -220,6 +220,18 @@ async def test_markdown_conversion():
     for request in requests:
         if 'insertText' in request and '|' in request['insertText'].get('text', ''):
             elements_check['tables'] = True
+    
+    # Debug: Examine the first 30 requests to understand structure
+    print("\n=== Examining First 30 Requests ===")
+    for i, request in enumerate(requests[:30]):
+        if 'updateTextStyle' in request:
+            style = request['updateTextStyle']
+            print(f"Request {i}: updateTextStyle - Range: {style['range']} - Style: {style['textStyle']}")
+        elif 'insertText' in request:
+            text = request['insertText']
+            print(f"Request {i}: insertText - Index: {text['location']['index']} - Text: '{text['text'][:20]}{'...' if len(text['text']) > 20 else ''}'")
+        else:
+            print(f"Request {i}: {list(request.keys())[0]}")
     
     print("\n=== Elements Found ===")
     for element, found in elements_check.items():
@@ -280,14 +292,21 @@ def find_text_for_style(requests, style_index):
     if not style_range:
         return -1
     
+    return find_text_for_request_range(requests, style_range)
+
+def find_text_for_request_range(requests, style_range):
+    """Find the corresponding insertText request that overlaps with the given style range."""
     # Look for text requests with the same or overlapping range
-    for i in range(style_index - 1, -1, -1):
-        if 'insertText' in requests[i]:
-            insert_index = requests[i]['insertText']['location']['index']
-            insert_text = requests[i]['insertText']['text']
+    for i, req in enumerate(requests):
+        if 'insertText' in req:
+            insert_index = req['insertText']['location']['index']
+            insert_text = req['insertText']['text']
+            text_end = insert_index + len(insert_text)
             
             # Check if this text insertion corresponds to the style
-            if insert_index <= style_range['startIndex'] < insert_index + len(insert_text):
+            # Either text starts within style range or style start is within text range
+            if (insert_index <= style_range['startIndex'] < text_end) or \
+               (style_range['startIndex'] <= insert_index < style_range['endIndex']):
                 return i
     
     return -1

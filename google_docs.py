@@ -288,124 +288,158 @@ def process_header(line: str, current_index: int) -> Tuple[List[Dict[str, Any]],
 
 
 def process_inline_formatting(line: str, current_index: int) -> Tuple[List[Dict[str, Any]], int]:
-    """Process inline formatting and return the requests and updated index."""
+    """Process inline formatting for a line of text and return the requests and updated index."""
     import re
     requests = []
-    line_parts = []
-    current_pos = 0
-    formatting_matches = []
-    for match in re.finditer(r'\*\*(.+?)\*\*|__(.+?)__', line):
-        text = match.group(1) if match.group(1) else match.group(2)
-        formatting_matches.append({
-            'start': match.start(),
-            'end': match.end(),
-            'text': text,
-            'type': 'bold'
+    
+    # Define common patterns  
+    bold_pattern = r'\*\*(.+?)\*\*|__(.+?)__'
+    italic_pattern = r'\*([^*]+)\*|_([^_]+)_'
+    
+    # Check if there is formatting in the line
+    has_bold = re.search(bold_pattern, line) is not None
+    has_italic = re.search(italic_pattern, line) is not None
+    
+    # If no formatting, just return the line as is
+    if not has_bold and not has_italic:
+        requests.append({
+            'insertText': {
+                'location': {'index': current_index},
+                'text': line + '\n'
+            }
         })
-    for match in re.finditer(r'\*([^*]+)\*|_([^_]+)_', line):
-        text = match.group(1) if match.group(1) else match.group(2)
-        formatting_matches.append({
-            'start': match.start(),
-            'end': match.end(),
-            'text': text,
-            'type': 'italic'
-        })
-    for match in re.finditer(r'\[(.+?)\]\((.+?)\)', line):
-        text = match.group(1)
-        url = match.group(2)
-        formatting_matches.append({
-            'start': match.start(),
-            'end': match.end(),
-            'text': text,
-            'url': url,
-            'type': 'link'
-        })
-    formatting_matches.sort(key=lambda m: m['start'])
-    i = 0
-    while i < len(formatting_matches) - 1:
-        if formatting_matches[i]['end'] > formatting_matches[i+1]['start']:
-            formatting_matches.pop(i+1)
-        else:
-            i += 1
-    for i, match in enumerate(formatting_matches):
-        if match['start'] > current_pos:
-            line_parts.append({
-                'text': line[current_pos:match['start']],
-                'type': 'normal'
+        return requests, current_index + len(line) + 1
+    
+    # Handle bold text first - replace it with plain text and add formatting
+    if has_bold:
+        # Find first bold section
+        bold_match = re.search(bold_pattern, line)
+        
+        # Get the text content, position, etc.
+        text = bold_match.group(1) or bold_match.group(2)
+        start = bold_match.start()
+        end = bold_match.end()
+        
+        # Add any text before the bold part
+        if start > 0:
+            prefix = line[:start]
+            requests.append({
+                'insertText': {
+                    'location': {'index': current_index},
+                    'text': prefix
+                }
             })
-        line_parts.append({
-            'text': match['text'],
-            'type': match['type'],
-            'url': match.get('url')
-        })
-        current_pos = match['end']
-    if current_pos < len(line):
-        line_parts.append({
-            'text': line[current_pos:],
-            'type': 'normal'
-        })
-    if not line_parts:
-        line_parts.append({
-            'text': line,
-            'type': 'normal'
-        })
-    line_parts.append({
-        'text': '\n',
-        'type': 'normal'
-    })
-    for part in line_parts:
-        text = part['text']
+            current_index += len(prefix)
+        
+        # Add the bold text
         requests.append({
             'insertText': {
                 'location': {'index': current_index},
                 'text': text
             }
         })
-        if part['type'] == 'bold':
-            requests.append({
-                'updateTextStyle': {
-                    'range': {
-                        'startIndex': current_index,
-                        'endIndex': current_index + len(text)
-                    },
-                    'textStyle': {
-                        'bold': True
-                    },
-                    'fields': 'bold'
-                }
-            })
-        elif part['type'] == 'italic':
-            requests.append({
-                'updateTextStyle': {
-                    'range': {
-                        'startIndex': current_index,
-                        'endIndex': current_index + len(text)
-                    },
-                    'textStyle': {
-                        'italic': True
-                    },
-                    'fields': 'italic'
-                }
-            })
-        elif part['type'] == 'link':
-            requests.append({
-                'updateTextStyle': {
-                    'range': {
-                        'startIndex': current_index,
-                        'endIndex': current_index + len(text)
-                    },
-                    'textStyle': {
-                        'link': {
-                            'url': part['url']
-                        }
-                    },
-                    'fields': 'link'
-                }
-            })
+        
+        # Apply bold formatting
+        requests.append({
+            'updateTextStyle': {
+                'range': {
+                    'startIndex': current_index,
+                    'endIndex': current_index + len(text)
+                },
+                'textStyle': {
+                    'bold': True
+                },
+                'fields': 'bold'
+            }
+        })
+        
         current_index += len(text)
-    return requests, current_index
-
-
+        
+        # Process the remainder of the line recursively
+        if end < len(line):
+            remaining_line = line[end:]
+            remaining_requests, current_index = process_inline_formatting(remaining_line, current_index)
+            requests.extend(remaining_requests)
+            return requests, current_index
+        else:
+            # End of line, add newline
+            requests.append({
+                'insertText': {
+                    'location': {'index': current_index},
+                    'text': '\n'
+                }
+            })
+            return requests, current_index + 1
+    
+    # Handle italic text next if no bold text was found
+    if has_italic:
+        # Find first italic section
+        italic_match = re.search(italic_pattern, line)
+        
+        # Get the text content, position, etc.
+        text = italic_match.group(1) or italic_match.group(2)
+        start = italic_match.start()
+        end = italic_match.end()
+        
+        # Add any text before the italic part
+        if start > 0:
+            prefix = line[:start]
+            requests.append({
+                'insertText': {
+                    'location': {'index': current_index},
+                    'text': prefix
+                }
+            })
+            current_index += len(prefix)
+        
+        # Add the italic text
+        requests.append({
+            'insertText': {
+                'location': {'index': current_index},
+                'text': text
+            }
+        })
+        
+        # Apply italic formatting
+        requests.append({
+            'updateTextStyle': {
+                'range': {
+                    'startIndex': current_index,
+                    'endIndex': current_index + len(text)
+                },
+                'textStyle': {
+                    'italic': True
+                },
+                'fields': 'italic'
+            }
+        })
+        
+        current_index += len(text)
+        
+        # Process the remainder of the line recursively
+        if end < len(line):
+            remaining_line = line[end:]
+            remaining_requests, current_index = process_inline_formatting(remaining_line, current_index)
+            requests.extend(remaining_requests)
+            return requests, current_index
+        else:
+            # End of line, add newline
+            requests.append({
+                'insertText': {
+                    'location': {'index': current_index},
+                    'text': '\n'
+                }
+            })
+            return requests, current_index + 1
+    
+    # Should never reach here, but just in case
+    requests.append({
+        'insertText': {
+            'location': {'index': current_index},
+            'text': line + '\n'
+        }
+    })
+    return requests, current_index + len(line) + 1
 
 
 def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
@@ -413,24 +447,70 @@ def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
     import re
     requests = []
     current_index = 1
+    
+    # Split text into blocks (paragraphs)
     blocks = re.split(r'\n{2,}', markdown_text)
-    for block in blocks:
+    
+    for i, block in enumerate(blocks):
         lines = block.split('\n')
+        
+        # Process code blocks
         code_block_match = re.match(r'^```(\w*)\n(.*?)\n```$', block, re.DOTALL)
         if code_block_match:
             block_requests, current_index = process_code_block(block, current_index)
             requests.extend(block_requests)
             continue
-        is_list = all(re.match(r'^\s*[\*\-\+]|\d+\.', line) for line in lines if line.strip())
-        if is_list and lines:
+        
+        # Check if the first line is a header
+        is_header = False
+        if lines and lines[0].strip():
+            header_match = re.match(r'^(#{1,6})\s+(.+)$', lines[0])
+            if header_match:
+                is_header = True
+                header_requests, current_index = process_header(lines[0], current_index)
+                requests.extend(header_requests)
+                lines = lines[1:]  # Remove the header line since it's been processed
+        
+        # More accurate list detection:
+        # A list item starts with: number + period + space, or asterisk/dash/plus + space
+        list_pattern = r'^\s*(\d+\.\s+|\*\s+|-\s+|\+\s+)'
+        is_list = False
+        
+        if len(lines) > 0 and all(line.strip() == '' or re.match(list_pattern, line) for line in lines):
+            is_list = True
             list_requests, current_index = process_list_block(lines, current_index)
             requests.extend(list_requests)
             continue
-        header_requests, current_index = process_header(lines[0], current_index)
-        requests.extend(header_requests)
-        for line in lines[1:]:
-            inline_requests, current_index = process_inline_formatting(line, current_index)
-            requests.extend(inline_requests)
+            
+        # Now process each line in the paragraph for formatting
+        for j, line in enumerate(lines):
+            if not line.strip():  # Skip empty lines
+                requests.append({
+                    'insertText': {
+                        'location': {'index': current_index},
+                        'text': '\n'
+                    }
+                })
+                current_index += 1
+                continue
+                
+            # Check for formatting in this line
+            has_formatting = bool(re.search(r'\*\*|\*|__|_|\[.+?\]\(.+?\)', line))
+            
+            if has_formatting:
+                inline_requests, current_index = process_inline_formatting(line, current_index)
+                requests.extend(inline_requests)
+            else:
+                # Just insert the text without formatting
+                requests.append({
+                    'insertText': {
+                        'location': {'index': current_index},
+                        'text': line + '\n'
+                    }
+                })
+                current_index += len(line) + 1
+        
+        # Add extra newline after block
         requests.append({
             'insertText': {
                 'location': {'index': current_index},
@@ -438,6 +518,7 @@ def markdown_to_docs_requests(markdown_text: str) -> List[Dict[str, Any]]:
             }
         })
         current_index += 1
+        
     return requests
 
 if __name__ == "__main__":
